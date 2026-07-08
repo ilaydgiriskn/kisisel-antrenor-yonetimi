@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Users, Activity, Calendar, CreditCard, Clock, Bell, LogOut, ChevronRight, X, Edit2, Plus, Mail } from 'lucide-react';
+import { Users, Activity, Calendar, CreditCard, Clock, Bell, LogOut, ChevronRight, X, Edit2, Plus, Mail, UserPlus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../supabaseClient';
 
@@ -9,14 +9,13 @@ export default function Dashboard() {
   const [profile, setProfile] = useState(null);
   
   const [clients, setClients] = useState([]);
-  const [invites, setInvites] = useState([]);
+  const [availableClients, setAvailableClients] = useState([]);
   const [loading, setLoading] = useState(true);
 
   // Modals state
   const [showAddModal, setShowAddModal] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState('');
-  const [inviteGoal, setInviteGoal] = useState('');
-  const [inviteLoading, setInviteLoading] = useState(false);
+  const [showTrainerModal, setShowTrainerModal] = useState(false);
+  const [trainerEmail, setTrainerEmail] = useState('');
 
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedClient, setSelectedClient] = useState(null);
@@ -24,6 +23,9 @@ export default function Dashboard() {
   const [editNotes, setEditNotes] = useState('');
   const [editStatus, setEditStatus] = useState('active');
   const [editLoading, setEditLoading] = useState(false);
+
+  // Sekme yönetimi
+  const [activeTab, setActiveTab] = useState('dashboard');
 
   useEffect(() => {
     fetchData();
@@ -42,8 +44,8 @@ export default function Dashboard() {
     setProfile(prof);
 
     if (prof) {
-      // Danışanları getir
-      const { data: clientData } = await supabase
+      // Eğitmenin kendi danışanlarını getir
+      const { data: clientData, error: clientError } = await supabase
         .from('client_details')
         .select(`
           id,
@@ -51,19 +53,44 @@ export default function Dashboard() {
           goal,
           active_package_status,
           trainer_notes,
-          profiles (first_name, last_name)
+          profiles!client_details_id_fkey (first_name, last_name)
         `)
         .eq('trainer_id', session.user.id);
       
-      if (clientData) setClients(clientData);
+      if (clientError) console.error("Client fetch error:", clientError);
+      
+      if (clientData) {
+        // Gelen veriyi formatla
+        const formattedClients = clientData.map(c => ({
+          ...c,
+          profiles: c.profiles
+        }));
+        setClients(formattedClients);
+      }
 
-      // Bekleyen davetleri getir
-      const { data: inviteData } = await supabase
-        .from('client_invites')
-        .select('*')
-        .eq('trainer_id', session.user.id);
-
-      if (inviteData) setInvites(inviteData);
+      // Sistemdeki tüm atanmamış danışanları getir
+      const { data: unassignedData, error: unassignedError } = await supabase
+        .from('client_details')
+        .select(`
+          id,
+          trainer_id,
+          profiles!client_details_id_fkey (first_name, last_name, role)
+        `)
+        .is('trainer_id', null);
+      
+      if (unassignedError) console.error("Unassigned fetch error:", unassignedError);
+      
+      // Sadece role = 'client' olanları filtrele ve formata uygun hale getir
+      if (unassignedData) {
+        const available = unassignedData
+          .filter(cd => cd.profiles?.role === 'client')
+          .map(cd => ({
+            id: cd.id,
+            first_name: cd.profiles.first_name,
+            last_name: cd.profiles.last_name
+          }));
+        setAvailableClients(available);
+      }
     }
     setLoading(false);
   };
@@ -73,23 +100,31 @@ export default function Dashboard() {
     navigate('/login');
   };
 
-  const handleAddClient = async (e) => {
-    e.preventDefault();
-    setInviteLoading(true);
-    const { error } = await supabase.from('client_invites').insert({
+  const handleAssignClient = async (clientId) => {
+    const { error } = await supabase.from('client_details').upsert({
+      id: clientId,
       trainer_id: user.id,
-      email: inviteEmail,
-      goal: inviteGoal
+      active_package_status: 'active'
     });
-    setInviteLoading(false);
-    
     if (error) {
-      alert('Davet gönderilirken hata oluştu: ' + error.message);
+      alert('Danışan eklenirken hata oluştu: ' + error.message);
     } else {
-      setShowAddModal(false);
-      setInviteEmail('');
-      setInviteGoal('');
-      fetchData(); // Listeyi yenile
+      fetchData(); // Listeleri yenile
+    }
+  };
+
+  const handleAddTrainer = async (e) => {
+    e.preventDefault();
+    const { error } = await supabase.from('trainer_invites').insert({
+      invited_by: user.id,
+      email: trainerEmail
+    });
+    if (error) {
+      alert('Eğitmen daveti gönderilirken hata oluştu: ' + error.message);
+    } else {
+      setShowTrainerModal(false);
+      setTrainerEmail('');
+      alert('Eğitmen daveti başarıyla oluşturuldu! Bu e-posta adresiyle sisteme kayıt olunduğunda yetki otomatik verilecektir.');
     }
   };
 
@@ -121,9 +156,8 @@ export default function Dashboard() {
   };
 
   const statCards = [
-    { title: 'Toplam Danışan', value: (clients.length + invites.length).toString(), icon: Users, color: '#3182CE' },
-    { title: 'Aktif Danışan', value: clients.filter(c => c.active_package_status === 'active').length.toString(), icon: Activity, color: '#10B981' },
-    { title: 'Bekleyen Davet', value: invites.length.toString(), icon: Mail, color: '#8B5CF6' }
+    { title: 'Aktif Danışan', value: clients.filter(c => c.active_package_status === 'active').length.toString(), icon: Users, color: '#10B981' },
+    { title: 'Sistemde Bekleyen', value: availableClients.length.toString(), icon: Activity, color: '#3182CE' }
   ];
 
   return (
@@ -139,12 +173,12 @@ export default function Dashboard() {
         <nav style={{ flex: 1, padding: '0 16px' }}>
           <div style={{ marginBottom: '24px' }}>
             <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px', paddingLeft: '8px' }}>Genel Bakış</div>
-            <a href="#" style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', color: '#fff', background: 'rgba(255,255,255,0.05)', borderRadius: 'var(--radius-sm)', textDecoration: 'none', marginBottom: '4px' }}>
-              <Activity size={20} className="text-accent" /> Panel
-            </a>
-            <a href="#" style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', color: 'var(--text-secondary)', textDecoration: 'none', borderRadius: 'var(--radius-sm)', transition: 'var(--transition-smooth)' }}>
-              <Users size={20} /> Danışanlar
-            </a>
+            <button onClick={() => setActiveTab('dashboard')} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', color: activeTab === 'dashboard' ? '#fff' : 'var(--text-secondary)', background: activeTab === 'dashboard' ? 'rgba(255,255,255,0.05)' : 'transparent', border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer', textAlign: 'left', marginBottom: '4px', transition: 'var(--transition-smooth)' }}>
+              <Activity size={20} className={activeTab === 'dashboard' ? 'text-accent' : ''} /> Panel
+            </button>
+            <button onClick={() => setActiveTab('clients')} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', color: activeTab === 'clients' ? '#fff' : 'var(--text-secondary)', background: activeTab === 'clients' ? 'rgba(255,255,255,0.05)' : 'transparent', border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer', textAlign: 'left', transition: 'var(--transition-smooth)' }}>
+              <Users size={20} className={activeTab === 'clients' ? 'text-accent' : ''} /> Danışanlar
+            </button>
           </div>
         </nav>
 
@@ -163,7 +197,7 @@ export default function Dashboard() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent-primary), #10B981)' }}></div>
               <div>
-                <div style={{ fontSize: '0.9rem', fontWeight: '600' }}>{profile ? `${profile.first_name} ${profile.last_name}` : 'Yükleniyor...'}</div>
+                <div style={{ fontSize: '0.9rem', fontWeight: '600' }}>{profile ? `${profile.first_name || ''} ${profile.last_name || ''}` : 'Yükleniyor...'}</div>
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Antrenör</div>
               </div>
             </div>
@@ -180,42 +214,40 @@ export default function Dashboard() {
             <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>Veriler yükleniyor...</div>
           ) : (
             <>
-              {/* Stat Cards */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '24px', marginBottom: '40px' }}>
-                {statCards.map((stat, idx) => (
-                  <div key={idx} className="glass-panel" style={{ padding: '24px', position: 'relative', overflow: 'hidden' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
-                      <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>{stat.title}</div>
-                      <div style={{ background: `${stat.color}20`, color: stat.color, padding: '8px', borderRadius: '8px' }}>
-                        <stat.icon size={20} />
+              {/* Sadece Panel sekmesindeyken İstatistikleri göster */}
+              {activeTab === 'dashboard' && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '24px', marginBottom: '40px' }}>
+                  {statCards.map((stat, idx) => (
+                    <div key={idx} className="glass-panel" style={{ padding: '24px', position: 'relative', overflow: 'hidden' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
+                        <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>{stat.title}</div>
+                        <div style={{ background: `${stat.color}20`, color: stat.color, padding: '8px', borderRadius: '8px' }}>
+                          <stat.icon size={20} />
+                        </div>
                       </div>
+                      <div style={{ fontSize: '2.5rem', fontWeight: '700' }}>{stat.value}</div>
                     </div>
-                    <div style={{ fontSize: '2.5rem', fontWeight: '700' }}>{stat.value}</div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
 
               {/* Lists */}
-              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '24px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: activeTab === 'dashboard' ? '2fr 1fr' : '1fr', gap: '24px' }}>
                 <div className="glass-panel" style={{ padding: '32px' }}>
                   <div className="flex-between" style={{ marginBottom: '24px' }}>
-                    <h3 style={{ fontSize: '1.2rem' }}>Danışan Listesi</h3>
-                    <button onClick={() => setShowAddModal(true)} className="btn btn-outline" style={{ padding: '8px 16px', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <Plus size={16} /> Yeni Ekle
-                    </button>
+                    <h3 style={{ fontSize: '1.2rem' }}>Senin Danışanların</h3>
                   </div>
                   
                   <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid var(--border-glass)', textAlign: 'left', color: 'var(--text-secondary)' }}>
-                        <th style={{ padding: '16px 0', fontWeight: '500' }}>Ad Soyad / E-posta</th>
+                        <th style={{ padding: '16px 0', fontWeight: '500' }}>Ad Soyad</th>
                         <th style={{ padding: '16px 0', fontWeight: '500' }}>Hedef</th>
                         <th style={{ padding: '16px 0', fontWeight: '500' }}>Durum</th>
                         <th style={{ padding: '16px 0', fontWeight: '500' }}>İşlem</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {/* Aktif Danışanlar */}
                       {clients.map((client, idx) => (
                         <tr key={client.id} style={{ borderBottom: '1px solid var(--border-glass)' }}>
                           <td style={{ padding: '16px 0', fontWeight: '500' }}>
@@ -241,65 +273,87 @@ export default function Dashboard() {
                         </tr>
                       ))}
                       
-                      {/* Bekleyen Davetler */}
-                      {invites.map((invite, idx) => (
-                        <tr key={invite.id} style={{ borderBottom: '1px solid var(--border-glass)' }}>
-                          <td style={{ padding: '16px 0', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <Mail size={16} /> {invite.email}
-                          </td>
-                          <td style={{ padding: '16px 0', color: 'var(--text-secondary)' }}>{invite.goal || '-'}</td>
-                          <td style={{ padding: '16px 0' }}>
-                            <span style={{ padding: '4px 12px', borderRadius: 'var(--radius-pill)', fontSize: '0.8rem', background: 'rgba(245, 158, 11, 0.1)', color: '#F59E0B' }}>
-                              Kayıt Bekliyor
-                            </span>
-                          </td>
-                          <td style={{ padding: '16px 0' }}>-</td>
-                        </tr>
-                      ))}
-                      
-                      {clients.length === 0 && invites.length === 0 && (
-                         <tr><td colSpan="4" style={{ padding: '24px 0', textAlign: 'center', color: 'var(--text-muted)' }}>Listeniz şu an boş.</td></tr>
+                      {clients.length === 0 && (
+                         <tr><td colSpan="4" style={{ padding: '24px 0', textAlign: 'center', color: 'var(--text-muted)' }}>Listeniz şu an boş. Sağdaki menüden danışan ekleyebilirsiniz.</td></tr>
                       )}
                     </tbody>
                   </table>
                 </div>
 
-                <div className="glass-panel" style={{ padding: '32px' }}>
-                  <h3 style={{ fontSize: '1.2rem', marginBottom: '24px' }}>Hızlı İşlemler</h3>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <button onClick={() => setShowAddModal(true)} style={{ width: '100%', padding: '16px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-glass)', borderRadius: 'var(--radius-sm)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', transition: 'var(--transition-smooth)' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}><Users size={20} className="text-accent" /> Danışan Ekle (Davet)</div>
-                      <ChevronRight size={16} color="var(--text-muted)" />
-                    </button>
+                {/* Sadece Panel sekmesindeyken Hızlı İşlemleri göster */}
+                {activeTab === 'dashboard' && (
+                  <div className="glass-panel" style={{ padding: '32px' }}>
+                    <h3 style={{ fontSize: '1.2rem', marginBottom: '24px' }}>Hızlı İşlemler</h3>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <button onClick={() => setShowAddModal(true)} style={{ width: '100%', padding: '16px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-glass)', borderRadius: 'var(--radius-sm)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', transition: 'var(--transition-smooth)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}><Users size={20} className="text-accent" /> Danışan Ekle</div>
+                        <ChevronRight size={16} color="var(--text-muted)" />
+                      </button>
+                      {profile?.role === 'admin' && (
+                        <button onClick={() => setShowTrainerModal(true)} style={{ width: '100%', padding: '16px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-glass)', borderRadius: 'var(--radius-sm)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', transition: 'var(--transition-smooth)' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}><UserPlus size={20} className="text-accent" /> Eğitmen Davet Et</div>
+                          <ChevronRight size={16} color="var(--text-muted)" />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             </>
           )}
         </div>
 
-        {/* Modal: Add Client */}
+        {/* Modal: Add Client from System */}
         {showAddModal && (
           <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, backdropFilter: 'blur(4px)' }}>
-            <div className="glass-panel" style={{ width: '400px', padding: '32px', position: 'relative' }}>
+            <div className="glass-panel" style={{ width: '500px', padding: '32px', position: 'relative', maxHeight: '80vh', overflowY: 'auto' }}>
               <button onClick={() => setShowAddModal(false)} style={{ position: 'absolute', top: '16px', right: '16px', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
                 <X size={24} />
               </button>
-              <h3 style={{ fontSize: '1.5rem', marginBottom: '24px' }}>Danışan Davet Et</h3>
+              <h3 style={{ fontSize: '1.5rem', marginBottom: '16px' }}>Sistemdeki Danışanlar</h3>
               <p style={{ color: 'var(--text-secondary)', marginBottom: '24px', fontSize: '0.9rem' }}>
-                Danışanınızın e-posta adresini girin. Kayıt olduklarında otomatik olarak listenize eklenecektir.
+                Henüz bir eğitmene atanmamış sistemdeki tüm kayıtlı danışanlar aşağıdadır. "Ekle" butonuna basarak kendi listenize alabilirsiniz.
               </p>
-              <form onSubmit={handleAddClient}>
-                <div style={{ marginBottom: '16px' }}>
-                  <label className="input-label">E-posta Adresi</label>
-                  <input type="email" className="input-field" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} required />
-                </div>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {availableClients.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)' }}>Atanmamış danışan bulunmuyor.</div>
+                ) : (
+                  availableClients.map(client => (
+                    <div key={client.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px', border: '1px solid var(--border-glass)' }}>
+                      <div>
+                        <div style={{ fontWeight: '500' }}>{client.first_name} {client.last_name}</div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Sisteme Kayıtlı</div>
+                      </div>
+                      <button onClick={() => handleAssignClient(client.id)} className="btn btn-primary" style={{ padding: '8px 16px', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Plus size={16} /> Ekle
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Modal: Invite Trainer */}
+        {showTrainerModal && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, backdropFilter: 'blur(4px)' }}>
+            <div className="glass-panel" style={{ width: '400px', padding: '32px', position: 'relative' }}>
+              <button onClick={() => setShowTrainerModal(false)} style={{ position: 'absolute', top: '16px', right: '16px', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
+                <X size={24} />
+              </button>
+              <h3 style={{ fontSize: '1.5rem', marginBottom: '16px' }}>Yeni Eğitmen Davet Et</h3>
+              <p style={{ color: 'var(--text-secondary)', marginBottom: '24px', fontSize: '0.9rem' }}>
+                Davet edeceğiniz eğitmenin e-posta adresini girin. Bu e-posta ile kayıt olduklarında otomatik olarak 'Eğitmen' yetkisi alacaklardır.
+              </p>
+              <form onSubmit={handleAddTrainer}>
                 <div style={{ marginBottom: '24px' }}>
-                  <label className="input-label">Hedef (Opsiyonel)</label>
-                  <input type="text" className="input-field" placeholder="Örn: Kilo Verme, Hacim" value={inviteGoal} onChange={e => setInviteGoal(e.target.value)} />
+                  <label className="input-label">E-posta Adresi</label>
+                  <input type="email" className="input-field" value={trainerEmail} onChange={e => setTrainerEmail(e.target.value)} required />
                 </div>
-                <button type="submit" className="btn btn-primary" style={{ width: '100%' }} disabled={inviteLoading}>
-                  {inviteLoading ? 'Gönderiliyor...' : 'Davet Gönder'}
+                <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
+                  Daveti Oluştur
                 </button>
               </form>
             </div>

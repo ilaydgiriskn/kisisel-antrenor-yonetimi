@@ -19,6 +19,15 @@ export default function Register() {
     const firstName = nameParts[0];
     const lastName = nameParts.slice(1).join(' ');
 
+    // Eğitmen daveti var mı kontrol et
+    const { data: trainerInvite } = await supabase
+      .from('trainer_invites')
+      .select('*')
+      .eq('email', email)
+      .single();
+
+    const assignedRole = trainerInvite ? 'trainer' : 'client';
+
     const { data: authData, error } = await supabase.auth.signUp({
       email,
       password,
@@ -26,7 +35,7 @@ export default function Register() {
         data: {
           first_name: firstName,
           last_name: lastName,
-          role: 'client'
+          role: assignedRole
         }
       }
     });
@@ -38,7 +47,12 @@ export default function Register() {
     }
 
     if (authData?.user) {
-      // Davet tablosunda bu email var mı kontrol et
+      // Eğitmen eklendiyse daveti sil
+      if (trainerInvite) {
+        await supabase.from('trainer_invites').delete().eq('id', trainerInvite.id);
+      }
+
+      // Davet tablosunda bu email var mı kontrol et (Danışan için)
       const { data: invite } = await supabase
         .from('client_invites')
         .select('*')
